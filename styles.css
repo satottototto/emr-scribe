@@ -1,0 +1,270 @@
+/* EMR Scribe — E-Ink friendly: high contrast, no animation, big touch targets */
+
+.emr-scribe-root {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding: 0;
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+.emr-scribe-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	padding: 4px 6px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex: 0 0 auto;
+	align-items: center;
+}
+
+.emr-scribe-btn {
+	min-height: 40px;
+	min-width: 44px;
+	padding: 4px 10px;
+	font-size: 14px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background: var(--background-primary);
+	box-shadow: none;
+	transition: none;
+}
+
+.emr-scribe-btn.is-active {
+	border: 2px solid var(--text-normal);
+	font-weight: bold;
+}
+
+.emr-scribe-btn svg {
+	width: 20px;
+	height: 20px;
+}
+
+.emr-scribe-btn-sub {
+	font-size: 0.68em;
+	margin-left: 2px;
+	align-self: flex-end;
+}
+
+.emr-scribe-hud {
+	margin-left: auto;
+	font-size: 11px;
+	font-family: var(--font-monospace);
+	color: var(--text-muted);
+}
+
+.emr-scribe-scroll {
+	flex: 1 1 auto;
+	overflow: auto;
+	background: var(--background-secondary);
+}
+
+.emr-scribe-canvas-wrap {
+	position: relative;
+	margin: 0 auto;
+	max-width: 100%;
+	line-height: 0;
+}
+
+.emr-scribe-canvas {
+	display: block;
+	width: 100%;
+	height: auto;
+	background: #ffffff;
+	cursor: crosshair;
+}
+
+.emr-scribe-overlay {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: auto;
+	pointer-events: none;
+}
+
+.emr-scribe-sep {
+	width: 1px;
+	align-self: stretch;
+	background: var(--background-modifier-border);
+	margin: 2px 4px;
+}
+
+/* tool style panel (iPad Notes-like) */
+.emr-scribe-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 8px 10px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	flex: 0 0 auto;
+}
+
+.emr-scribe-panel-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.emr-scribe-panel-label {
+	min-width: 52px;
+	font-size: 13px;
+	color: var(--text-muted);
+}
+
+.emr-scribe-dotbtn {
+	width: 48px;
+	height: 40px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background: var(--background-primary);
+	box-shadow: none;
+	padding: 0;
+	transition: none;
+}
+
+.emr-scribe-dotbtn.is-active {
+	border: 2px solid var(--text-normal);
+}
+
+/* thickness preview: horizontal bar at actual stroke width —
+   centered dots are invisible on E-Ink panels */
+.emr-scribe-thickbar {
+	display: inline-block;
+	width: 32px;
+	min-height: 3px;
+	border-radius: 3px;
+	background: var(--text-normal);
+}
+
+.emr-scribe-swatch {
+	width: 34px;
+	height: 34px;
+	border-radius: 50%;
+	border: 2px solid var(--background-modifier-border);
+	box-shadow: none;
+	padding: 0;
+	transition: none;
+}
+
+.emr-scribe-swatch.is-active {
+	border: 3px solid var(--text-normal);
+}
+
+.emr-scribe-picker {
+	width: 40px;
+	height: 34px;
+	padding: 0;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+}
+
+.emr-scribe-pct {
+	font-size: 14px;
+	color: var(--text-normal);
+	min-width: 44px;
+}
+
+/* high-contrast opacity slider (default range styling is invisible on E-Ink) */
+.emr-scribe-range {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 200px;
+	max-width: 50vw;
+	height: 32px;
+	background: transparent;
+	cursor: pointer;
+}
+
+.emr-scribe-range::-webkit-slider-runnable-track {
+	height: 10px;
+	background: var(--background-secondary);
+	border: 2px solid var(--text-normal);
+	border-radius: 6px;
+}
+
+.emr-scribe-range::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 26px;
+	height: 26px;
+	margin-top: -10px;
+	border-radius: 50%;
+	background: var(--background-primary);
+	border: 4px solid var(--text-normal);
+}
+
+/* OCR text pane below the handwriting (no label — form only) */
+.emr-scribe-textpane {
+	position: relative;
+	max-width: 100%;
+	margin: 8px auto 24px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background: var(--background-primary);
+}
+
+.emr-scribe-copybtn {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	min-height: 32px;
+	min-width: 36px;
+}
+
+.emr-scribe-textpane-body {
+	padding: 8px 48px 8px 10px;
+	white-space: pre-wrap;
+	-webkit-user-select: text;
+	user-select: text;
+	font-size: 15px;
+	line-height: 1.6;
+}
+
+/* embed preview */
+.emr-scribe-embed {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	overflow: hidden;
+	cursor: pointer;
+	line-height: 0;
+	background: #ffffff;
+}
+
+.emr-scribe-svg {
+	width: 100%;
+	height: auto;
+	display: block;
+	background: #ffffff;
+}
+
+.emr-scribe-embed-text {
+	margin-top: 4px;
+	padding: 6px 10px;
+	border-left: 3px solid var(--background-modifier-border);
+	white-space: pre-wrap;
+	-webkit-user-select: text;
+	user-select: text;
+	color: var(--text-normal);
+}
+
+/* OCR modal */
+.emr-scribe-ocr-text {
+	width: 100%;
+	min-height: 200px;
+	font-family: var(--font-text);
+	resize: vertical;
+}
+
+.emr-scribe-ocr-buttons {
+	display: flex;
+	gap: 8px;
+	margin-top: 8px;
+	justify-content: flex-end;
+}
