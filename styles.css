@@ -60,10 +60,17 @@
 	background: var(--background-secondary);
 }
 
+/* wrapEl stacks page containers; no padding/gaps so pointer coordinates map
+   linearly to document coordinates */
 .emr-scribe-canvas-wrap {
-	position: relative;
 	margin: 0 auto;
 	max-width: 100%;
+	line-height: 0;
+	touch-action: none;
+}
+
+.emr-scribe-page {
+	position: relative;
 	line-height: 0;
 }
 

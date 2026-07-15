@@ -415,6 +415,12 @@ class ScribeView extends TextFileView {
 		this.ocrBusy = false;
 		this.ocrPending = false;
 		this.ocrCache = new Map(); // lineKey → recognized text
+		this.textSaveTimer = null;
+		// One <canvas> pair per page. A single tall canvas breaks past the
+		// GPU max texture size (~4096px on E-Ink SoCs): the whole thing gets
+		// squeezed into one texture, stretching everything and misplacing new
+		// ink. Per-page canvases stay well under the limit at any page count.
+		this.pages = []; // [{ wrap, main, over, mctx, octx }]
 		// debug HUD counters
 		this.dbgEvents = 0;
 		this.dbgDrawMs = 0;
@@ -444,7 +450,7 @@ class ScribeView extends TextFileView {
 		if (!this.docData.strokes) this.docData.strokes = [];
 		this.redoStack = [];
 		if (this.domReady) {
-			this.resizeCanvases();
+			this.syncPages();
 			this.fullRedraw();
 			this.updateTextPane();
 		}
@@ -458,7 +464,7 @@ class ScribeView extends TextFileView {
 		this.buildDom();
 		this.domReady = true;
 		if (this.docData) {
-			this.resizeCanvases();
+			this.syncPages();
 			this.fullRedraw();
 			this.updateTextPane();
 		}
@@ -563,9 +569,8 @@ class ScribeView extends TextFileView {
 		this.panelEl.style.display = 'none';
 
 		this.scrollEl = root.createDiv({ cls: 'emr-scribe-scroll' });
+		// Page canvases are created lazily by syncPages(); wrapEl just stacks them.
 		this.wrapEl = this.scrollEl.createDiv({ cls: 'emr-scribe-canvas-wrap' });
-		this.canvas = this.wrapEl.createEl('canvas', { cls: 'emr-scribe-canvas' });
-		this.overlay = this.wrapEl.createEl('canvas', { cls: 'emr-scribe-overlay' });
 
 		// The OCR text lives directly under the handwriting, selectable.
 		this.textPane = this.scrollEl.createDiv({ cls: 'emr-scribe-textpane' });
@@ -596,7 +601,7 @@ class ScribeView extends TextFileView {
 		// touch-action must be 'none': Android lets the STYLUS trigger pan
 		// gestures too, which cancels strokes mid-write. Finger panning is
 		// handled manually in the pointer handlers instead.
-		this.canvas.style.touchAction = 'none';
+		this.wrapEl.style.touchAction = 'none';
 
 		this.bindPointerEvents();
 		this.refreshToolbar();
@@ -707,65 +712,94 @@ class ScribeView extends TextFileView {
 		this.dbgEvents = 0;
 	}
 
-	resizeCanvases() {
+	/** Create/remove/size one canvas pair per page so no single canvas ever
+	 *  exceeds the GPU texture limit. Strokes are stored in absolute document
+	 *  coordinates; each page's context carries a transform that offsets it to
+	 *  the page, so all draw code can keep passing absolute coordinates. */
+	syncPages() {
 		const doc = this.docData;
+		if (!doc) return;
 		const scale = this.plugin.settings.canvasScale || 1;
-		for (const cv of [this.canvas, this.overlay]) {
-			cv.width = Math.round(doc.width * scale);
-			cv.height = Math.round(doc.height * scale);
-		}
-		// desynchronized: low-latency hint. Default is mobile-only because
-		// some Windows GPU configurations render nothing when it is forced.
+		const pageH = doc.pageH || doc.height;
+		doc.pageH = pageH;
+		const count = Math.max(1, Math.round(doc.height / pageH));
 		const ds = this.plugin.settings.desyncCanvas;
 		const desync = ds === 'on' || (ds === 'auto' && Platform.isMobile);
-		this.ctx = this.canvas.getContext('2d', { desynchronized: desync, alpha: false });
-		this.octx = this.overlay.getContext('2d', { desynchronized: desync });
-		this.ctx.setTransform(scale, 0, 0, scale, 0, 0);
-		this.octx.setTransform(scale, 0, 0, scale, 0, 0);
-		for (const c of [this.ctx, this.octx]) {
-			c.lineCap = 'round';
-			c.lineJoin = 'round';
+
+		while (this.pages.length > count) this.pages.pop().wrap.remove();
+		while (this.pages.length < count) {
+			const wrap = this.wrapEl.createDiv({ cls: 'emr-scribe-page' });
+			const main = wrap.createEl('canvas', { cls: 'emr-scribe-canvas' });
+			const over = wrap.createEl('canvas', { cls: 'emr-scribe-overlay' });
+			this.pages.push({ wrap, main, over, mctx: null, octx: null });
+		}
+
+		const wpx = Math.round(doc.width * scale);
+		const hpx = Math.round(pageH * scale);
+		for (let i = 0; i < this.pages.length; i++) {
+			const p = this.pages[i];
+			p.main.width = wpx;
+			p.main.height = hpx;
+			p.over.width = wpx;
+			p.over.height = hpx;
+			p.mctx = p.main.getContext('2d', { desynchronized: desync, alpha: false });
+			p.octx = p.over.getContext('2d', { desynchronized: desync });
+			const off = -i * pageH * scale;
+			p.mctx.setTransform(scale, 0, 0, scale, 0, off);
+			p.octx.setTransform(scale, 0, 0, scale, 0, off);
+			for (const c of [p.mctx, p.octx]) {
+				c.lineCap = 'round';
+				c.lineJoin = 'round';
+			}
 		}
 	}
 
 	// ---------- rendering ----------
 
+	pageForY(y) {
+		const pageH = this.docData.pageH || this.docData.height;
+		let i = Math.floor(y / pageH);
+		if (i < 0) i = 0;
+		if (i > this.pages.length - 1) i = this.pages.length - 1;
+		return i;
+	}
+
 	fillBackground() {
-		const { width, height } = this.docData;
-		this.ctx.fillStyle = '#ffffff';
-		this.ctx.fillRect(0, 0, width, height);
-		// dashed page separators on multi-page documents
-		const ph = this.docData.pageH || 0;
-		if (ph > 0 && height > ph) {
-			this.ctx.save();
-			this.ctx.strokeStyle = '#c8c8c8';
-			this.ctx.lineWidth = 1;
-			this.ctx.setLineDash([8, 8]);
-			for (let y = ph; y < height; y += ph) {
-				this.ctx.beginPath();
-				this.ctx.moveTo(0, y);
-				this.ctx.lineTo(width, y);
-				this.ctx.stroke();
+		const { width } = this.docData;
+		const pageH = this.docData.pageH;
+		const count = this.pages.length;
+		for (let i = 0; i < count; i++) {
+			const ctx = this.pages[i].mctx;
+			ctx.fillStyle = '#ffffff';
+			ctx.fillRect(0, i * pageH, width, pageH);
+			// dashed separator drawn inside the bottom of every non-last page
+			if (i < count - 1) {
+				ctx.save();
+				ctx.strokeStyle = '#c8c8c8';
+				ctx.lineWidth = 1;
+				ctx.setLineDash([8, 8]);
+				const y = (i + 1) * pageH - 1;
+				ctx.beginPath();
+				ctx.moveTo(0, y);
+				ctx.lineTo(width, y);
+				ctx.stroke();
+				ctx.restore();
 			}
-			this.ctx.restore();
 		}
 	}
 
 	/** Extend the document downward by one page. Existing strokes keep their
-	 *  coordinates; only the canvas grows. */
+	 *  coordinates; a new page canvas is appended. */
 	addPage() {
 		const doc = this.docData;
 		if (!doc) return;
 		if (!doc.pageH) doc.pageH = doc.height;
-		const scale = this.plugin.settings.canvasScale || 1;
-		const newH = doc.height + doc.pageH;
-		// Canvas backing stores hit browser limits around 16k px per side.
-		if (Math.round(newH * scale) > 16000) {
+		if (Math.round(doc.height / doc.pageH) >= 200) {
 			new Notice(t('pageLimit'));
 			return;
 		}
-		doc.height = newH;
-		this.resizeCanvases();
+		doc.height += doc.pageH;
+		this.syncPages();
 		this.fullRedraw();
 		this.requestSave();
 		new Notice(t('pageAdded').replace('{n}', String(Math.round(doc.height / doc.pageH))));
@@ -773,59 +807,15 @@ class ScribeView extends TextFileView {
 	}
 
 	fullRedraw() {
-		if (!this.ctx || !this.docData) return;
+		if (!this.pages.length || !this.docData) return;
 		this.fillBackground();
-		for (const s of this.docData.strokes) this.drawStrokeFinal(this.ctx, s);
+		for (const s of this.docData.strokes) this.drawStrokeFinal(s);
 		this.clearOverlay();
 	}
 
-	/** Final-quality render of a completed stroke. */
-	drawStrokeFinal(ctx, s) {
-		if (!s.p.length) return;
-		if (isFlatStroke(s)) {
-			this.drawFlatPath(ctx, s, s.p, null);
-		} else {
-			this.drawStrokeSegmented(ctx, s);
-		}
-	}
+	// low-level primitives (absolute coords; ctx transform handles page offset)
 
-	/** One single path with constant width — required for translucent ink,
-	 *  otherwise segment joints double-blend and look dotted. */
-	drawFlatPath(ctx, s, pts, extraPt) {
-		ctx.globalAlpha = s.o != null ? s.o : 1;
-		ctx.strokeStyle = s.c;
-		ctx.lineWidth =
-			s.t === 'marker' ? s.w : avgStrokeWidth(s, this.plugin.settings.usePressure);
-		ctx.beginPath();
-		ctx.moveTo(pts[0][0], pts[0][1]);
-		if (pts.length === 1 && !extraPt) {
-			ctx.lineTo(pts[0][0] + 0.01, pts[0][1]);
-		} else {
-			for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-			if (extraPt) ctx.lineTo(extraPt[0], extraPt[1]);
-		}
-		ctx.stroke();
-		ctx.globalAlpha = 1;
-	}
-
-	drawStrokeSegmented(ctx, s) {
-		const pts = s.p;
-		if (!pts.length) return;
-		ctx.strokeStyle = s.c;
-		if (pts.length === 1) {
-			ctx.lineWidth = strokeWidthFor(s.w, pts[0][2], this.plugin.settings.usePressure);
-			ctx.beginPath();
-			ctx.moveTo(pts[0][0], pts[0][1]);
-			ctx.lineTo(pts[0][0] + 0.01, pts[0][1]);
-			ctx.stroke();
-			return;
-		}
-		for (let i = 1; i < pts.length; i++) {
-			this.drawSegment(ctx, s, pts[i - 1], pts[i]);
-		}
-	}
-
-	drawSegment(ctx, s, a, b) {
+	_seg(ctx, s, a, b) {
 		ctx.strokeStyle = s.c;
 		ctx.lineWidth = strokeWidthFor(
 			s.w,
@@ -838,41 +828,111 @@ class ScribeView extends TextFileView {
 		ctx.stroke();
 	}
 
+	_dot(ctx, s, pt) {
+		ctx.strokeStyle = s.c;
+		ctx.lineWidth = strokeWidthFor(s.w, pt[2], this.plugin.settings.usePressure);
+		ctx.beginPath();
+		ctx.moveTo(pt[0], pt[1]);
+		ctx.lineTo(pt[0] + 0.01, pt[1]);
+		ctx.stroke();
+	}
+
+	/** One single path with constant width — required for translucent ink,
+	 *  otherwise segment joints double-blend and look dotted. */
+	_flatPath(ctx, s, pts, extraPt) {
+		ctx.globalAlpha = s.o != null ? s.o : 1;
+		ctx.strokeStyle = s.c;
+		ctx.lineWidth = s.t === 'marker' ? s.w : avgStrokeWidth(s, this.plugin.settings.usePressure);
+		ctx.beginPath();
+		ctx.moveTo(pts[0][0], pts[0][1]);
+		if (pts.length === 1 && !extraPt) {
+			ctx.lineTo(pts[0][0] + 0.01, pts[0][1]);
+		} else {
+			for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+			if (extraPt) ctx.lineTo(extraPt[0], extraPt[1]);
+		}
+		ctx.stroke();
+		ctx.globalAlpha = 1;
+	}
+
+	// page routing: draw a segment on whichever page(s) it touches. Each page
+	// canvas clips to its own bounds, so drawing on both endpoints' pages
+	// renders a boundary-crossing segment correctly.
+	segOnPages(a, b, s, overlay) {
+		const pa = this.pageForY(a[1]);
+		const pb = this.pageForY(b[1]);
+		this._seg(overlay ? this.pages[pa].octx : this.pages[pa].mctx, s, a, b);
+		if (pb !== pa) this._seg(overlay ? this.pages[pb].octx : this.pages[pb].mctx, s, a, b);
+	}
+
+	flatPathOnPages(s, pts, extraPt, overlay) {
+		let minY = Infinity, maxY = -Infinity;
+		for (const pt of pts) {
+			if (pt[1] < minY) minY = pt[1];
+			if (pt[1] > maxY) maxY = pt[1];
+		}
+		if (extraPt) {
+			if (extraPt[1] < minY) minY = extraPt[1];
+			if (extraPt[1] > maxY) maxY = extraPt[1];
+		}
+		const from = this.pageForY(minY), to = this.pageForY(maxY);
+		for (let i = from; i <= to; i++) {
+			this._flatPath(overlay ? this.pages[i].octx : this.pages[i].mctx, s, pts, extraPt);
+		}
+	}
+
+	/** Final-quality render of a completed stroke onto the main canvases. */
+	drawStrokeFinal(s) {
+		const pts = s.p;
+		if (!pts.length) return;
+		if (isFlatStroke(s)) {
+			this.flatPathOnPages(s, pts, null, false);
+			return;
+		}
+		if (pts.length === 1) {
+			this._dot(this.pages[this.pageForY(pts[0][1])].mctx, s, pts[0]);
+			return;
+		}
+		for (let i = 1; i < pts.length; i++) this.segOnPages(pts[i - 1], pts[i], s, false);
+	}
+
 	clearOverlay() {
-		if (!this.octx) return;
 		const { width, height } = this.docData;
-		this.octx.clearRect(0, 0, width, height);
+		const pageH = this.docData.pageH;
+		for (let i = 0; i < this.pages.length; i++) {
+			this.pages[i].octx.clearRect(0, i * pageH, width, Math.min(pageH, height));
+		}
 	}
 
 	/** Translucent in-progress stroke: repaint the whole (single) stroke on
 	 *  the cleared overlay every event, composite onto the main canvas once
 	 *  at pointerup. Opaque strokes never take this path. */
 	redrawActiveOnOverlay(e) {
-		if (!this.octx || !this.active) return;
+		if (!this.pages.length || !this.active) return;
 		this.clearOverlay();
 		let extra = null;
 		if (e && this.plugin.settings.usePrediction && e.getPredictedEvents) {
 			const preds = e.getPredictedEvents();
 			if (preds.length) extra = this.toLogical(preds[preds.length - 1]);
 		}
-		this.drawFlatPath(this.octx, this.active, this.active.p, extra);
+		this.flatPathOnPages(this.active, this.active.p, extra, true);
 	}
 
 	drawPrediction(e) {
-		if (!this.plugin.settings.usePrediction || !this.octx || !this.active) return;
+		if (!this.plugin.settings.usePrediction || !this.pages.length || !this.active) return;
 		this.clearOverlay();
 		if (!e.getPredictedEvents) return;
 		const preds = e.getPredictedEvents();
 		if (!preds.length) return;
 		const last = this.active.p[this.active.p.length - 1];
 		const pt = this.toLogical(preds[preds.length - 1]);
-		this.drawSegment(this.octx, this.active, last, pt);
+		this.segOnPages(last, pt, this.active, true);
 	}
 
 	// ---------- input ----------
 
 	toLogical(e) {
-		const r = this.canvas.getBoundingClientRect();
+		const r = this.wrapEl.getBoundingClientRect();
 		const t0 = this.strokeT0 != null ? Math.max(0, Math.round(e.timeStamp - this.strokeT0)) : 0;
 		return [
 			round1((e.clientX - r.left) * (this.docData.width / r.width)),
@@ -883,7 +943,9 @@ class ScribeView extends TextFileView {
 	}
 
 	bindPointerEvents() {
-		const cv = this.canvas;
+		// Bound on wrapEl (the page stack), so a single listener set serves
+		// every page canvas and keeps working as pages are added/removed.
+		const cv = this.wrapEl;
 		cv.addEventListener('contextmenu', (e) => e.preventDefault());
 		cv.addEventListener('pointerdown', (e) => this.onPointerDown(e));
 		const move = (e) => this.onPointerMove(e);
@@ -910,7 +972,7 @@ class ScribeView extends TextFileView {
 			this.panPointerId = e.pointerId;
 			this.panStartY = e.clientY;
 			this.panStartTop = this.scrollEl.scrollTop;
-			this.canvas.setPointerCapture(e.pointerId);
+			this.wrapEl.setPointerCapture(e.pointerId);
 			return;
 		}
 
@@ -919,7 +981,7 @@ class ScribeView extends TextFileView {
 		// Pen touching down kills any palm-initiated pan immediately.
 		this.panPointerId = null;
 		this.hidePanel();
-		this.canvas.setPointerCapture(e.pointerId);
+		this.wrapEl.setPointerCapture(e.pointerId);
 		this.activePointerId = e.pointerId;
 
 		const hwEraser = (e.buttons & 32) === 32 || e.button === 5;
@@ -938,7 +1000,7 @@ class ScribeView extends TextFileView {
 			p: [this.toLogical(e)],
 		};
 		if (isFlatStroke(this.active)) this.redrawActiveOnOverlay(null);
-		else this.drawStrokeSegmented(this.ctx, this.active);
+		else this.drawStrokeFinal(this.active); // renders the initial dot
 	}
 
 	onPointerMove(e) {
@@ -964,7 +1026,7 @@ class ScribeView extends TextFileView {
 				const last = pts[pts.length - 1];
 				if (pt[0] === last[0] && pt[1] === last[1]) continue;
 				pts.push(pt);
-				if (!flat) this.drawSegment(this.ctx, this.active, last, pt);
+				if (!flat) this.segOnPages(last, pt, this.active, false);
 			}
 			if (flat) this.redrawActiveOnOverlay(e);
 			else this.drawPrediction(e);
@@ -992,7 +1054,7 @@ class ScribeView extends TextFileView {
 		this.active = null;
 		this.docData.strokes.push(s);
 		this.clearOverlay();
-		if (isFlatStroke(s)) this.drawStrokeFinal(this.ctx, s);
+		if (isFlatStroke(s)) this.drawStrokeFinal(s);
 		this.redoStack = [];
 		this.requestSave();
 		this.scheduleAutoOcr();
@@ -1111,12 +1173,35 @@ class ScribeView extends TextFileView {
 		return results.join('\n').trim();
 	}
 
+	/** Flatten all page canvases into one PNG (base64) for image-based OCR
+	 *  endpoints, downscaled to stay within a safe single-texture size. */
+	composePng() {
+		const doc = this.docData;
+		const maxDim = 4096;
+		const sc = Math.min(1, maxDim / Math.max(doc.width, doc.height));
+		const cv = document.createElement('canvas');
+		cv.width = Math.round(doc.width * sc);
+		cv.height = Math.round(doc.height * sc);
+		const cx = cv.getContext('2d');
+		cx.fillStyle = '#ffffff';
+		cx.fillRect(0, 0, cv.width, cv.height);
+		const pageH = doc.pageH || doc.height;
+		for (let i = 0; i < this.pages.length; i++) {
+			cx.drawImage(
+				this.pages[i].main,
+				0, Math.round(i * pageH * sc),
+				cv.width, Math.round(pageH * sc)
+			);
+		}
+		return cv.toDataURL('image/png').split(',')[1];
+	}
+
 	async ocrViaEndpoint() {
 		const ep = this.plugin.settings.ocrEndpoint;
 		if (!ep) {
 			throw new Error(t('endpointMissing'));
 		}
-		const png = this.canvas.toDataURL('image/png').split(',')[1];
+		const png = this.composePng();
 		const res = await requestUrl({
 			url: ep,
 			method: 'POST',
