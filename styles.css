@@ -218,13 +218,25 @@
 	min-width: 36px;
 }
 
+/* editable plain-text area; grows with content, scrolls inside past ~45vh */
 .emr-scribe-textpane-body {
+	display: block;
+	width: 100%;
+	box-sizing: border-box;
 	padding: 8px 48px 8px 10px;
+	border: none;
+	outline: none;
+	background: transparent;
+	color: var(--text-normal);
 	white-space: pre-wrap;
 	-webkit-user-select: text;
 	user-select: text;
+	font-family: var(--font-text);
 	font-size: 15px;
 	line-height: 1.6;
+	resize: none;
+	overflow-y: auto;
+	min-height: 48px;
 }
 
 /* embed preview */

@@ -53,7 +53,8 @@ const TR = {
 		redo: 'Redo',
 		clearAll: 'Erase all',
 		addPage: 'Add page',
-		ocrBtn: 'Recognize handwriting now',
+		ocrBtn: 'Recognize now (only changed lines are sent)',
+		reocrBtn: 'Re-recognize everything (ignore cache)',
 		ocrAutoBtn: 'Toggle automatic recognition',
 		thickness: 'Thickness',
 		color: 'Color',
@@ -120,7 +121,8 @@ const TR = {
 		redo: 'やり直す',
 		clearAll: '全消去',
 		addPage: 'ページ追加',
-		ocrBtn: '今すぐ手書き認識',
+		ocrBtn: '今すぐ認識（変更行のみ送信）',
+		reocrBtn: '全体を再認識（キャッシュ無視）',
 		ocrAutoBtn: '自動認識の切り替え',
 		thickness: '太さ',
 		color: '色',
@@ -286,6 +288,10 @@ function docToSvg(doc) {
  */
 function clusterLines(strokes, pageWidth) {
 	const baseTol = Math.max(35, pageWidth * 0.035);
+	// Cap the merge tolerance: without it one tall stroke (a bracket, an
+	// arrow, a sketch) chain-merges every following line into a single giant
+	// "line" whose recognition then fails for everything below it.
+	const maxTol = pageWidth * 0.12;
 	const lines = [];
 	for (const s of strokes) {
 		if (!s.p || !s.p.length) continue;
@@ -297,7 +303,10 @@ function clusterLines(strokes, pageWidth) {
 		let best = null, bestGap = Infinity;
 		for (const line of lines) {
 			const gap = Math.max(line.minY - maxY, minY - line.maxY, 0);
-			const tol = Math.max(baseTol, 0.6 * Math.max(line.maxY - line.minY, maxY - minY));
+			const tol = Math.min(
+				maxTol,
+				Math.max(baseTol, 0.6 * Math.max(line.maxY - line.minY, maxY - minY))
+			);
 			if (gap <= tol && gap < bestGap) {
 				best = line;
 				bestGap = gap;
@@ -332,12 +341,25 @@ function lineKey(line) {
  * handwriting input; no API key). Takes raw stroke coordinates — far more
  * accurate for handwriting than image OCR. Sends ink to Google's servers.
  */
-async function recognizeGoogleInk(lineStrokes, lang, width, height) {
+async function recognizeGoogleInk(lineStrokes, lang) {
+	// Normalize the line to its own origin: the recognizer is designed for a
+	// single-line input box, so a small writing area around the actual ink is
+	// more reliable than page-absolute coordinates on a tall multi-page canvas.
+	const M = 20;
+	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+	for (const s of lineStrokes) {
+		for (const pt of s.p) {
+			if (pt[0] < minX) minX = pt[0];
+			if (pt[0] > maxX) maxX = pt[0];
+			if (pt[1] < minY) minY = pt[1];
+			if (pt[1] > maxY) maxY = pt[1];
+		}
+	}
 	const ink = lineStrokes.map((s) => {
 		const xs = [], ys = [], ts = [];
 		s.p.forEach((pt, i) => {
-			xs.push(Math.round(pt[0]));
-			ys.push(Math.round(pt[1]));
+			xs.push(Math.round(pt[0] - minX + M));
+			ys.push(Math.round(pt[1] - minY + M));
 			ts.push(pt[3] != null ? pt[3] : i * 15);
 		});
 		return [xs, ys, ts];
@@ -346,7 +368,10 @@ async function recognizeGoogleInk(lineStrokes, lang, width, height) {
 		options: 'enable_pre_space',
 		requests: [
 			{
-				writing_guide: { writing_area_width: width, writing_area_height: height },
+				writing_guide: {
+					writing_area_width: Math.round(maxX - minX + 2 * M),
+					writing_area_height: Math.round(maxY - minY + 2 * M),
+				},
 				ink,
 				language: lang,
 			},
@@ -442,6 +467,14 @@ class ScribeView extends TextFileView {
 	async onClose() {
 		if (this.dbgTimer) window.clearInterval(this.dbgTimer);
 		if (this.ocrTimer) window.clearTimeout(this.ocrTimer);
+		if (this.textSaveTimer) {
+			// flush a pending text edit before the view goes away
+			window.clearTimeout(this.textSaveTimer);
+			this.textSaveTimer = null;
+			if (this.docData && this.textBody) {
+				this.docData.ocr = { text: this.textBody.value, at: new Date().toISOString() };
+			}
+		}
 	}
 
 	currentStyle() {
@@ -501,9 +534,18 @@ class ScribeView extends TextFileView {
 		ocrBtn.setAttribute('aria-label', t('ocrBtn'));
 		ocrBtn.addEventListener('click', () => this.runOcr(true));
 
+		const reocrBtn = bar.createEl('button', { cls: 'emr-scribe-btn' });
+		reocrBtn.createSpan({ text: 'Re', cls: 'emr-scribe-btn-sub' });
+		reocrBtn.createSpan({ text: 'OCR' });
+		reocrBtn.setAttribute('aria-label', t('reocrBtn'));
+		reocrBtn.addEventListener('click', () => {
+			this.ocrCache.clear();
+			this.runOcr(true);
+		});
+
 		this.autoOcrBtn = bar.createEl('button', { cls: 'emr-scribe-btn' });
-		this.autoOcrBtn.createSpan({ text: 'OCR' });
-		this.autoOcrBtn.createSpan({ text: 'Auto', cls: 'emr-scribe-btn-sub' });
+		this.autoOcrBtn.createSpan({ text: 'Auto' });
+		this.autoStateEl = this.autoOcrBtn.createSpan({ text: '○', cls: 'emr-scribe-btn-sub' });
 		this.autoOcrBtn.setAttribute('aria-label', t('ocrAutoBtn'));
 		this.autoOcrBtn.addEventListener('click', async () => {
 			this.plugin.settings.autoOcr = !this.plugin.settings.autoOcr;
@@ -537,7 +579,19 @@ class ScribeView extends TextFileView {
 				new Notice(t('copied'));
 			}
 		});
-		this.textBody = this.textPane.createDiv({ cls: 'emr-scribe-textpane-body' });
+		// Editable plain text: user corrections are saved back into the file.
+		// Note that a later OCR pass overwrites the whole text again.
+		this.textBody = this.textPane.createEl('textarea', { cls: 'emr-scribe-textpane-body' });
+		this.textBody.addEventListener('input', () => {
+			this.autoGrowTextPane();
+			if (this.textSaveTimer) window.clearTimeout(this.textSaveTimer);
+			this.textSaveTimer = window.setTimeout(() => {
+				this.textSaveTimer = null;
+				if (!this.docData) return;
+				this.docData.ocr = { text: this.textBody.value, at: new Date().toISOString() };
+				this.requestSave();
+			}, 600);
+		});
 
 		// touch-action must be 'none': Android lets the STYLUS trigger pan
 		// gestures too, which cancels strokes mid-write. Finger panning is
@@ -641,7 +695,10 @@ class ScribeView extends TextFileView {
 		this.eraserBtn.toggleClass('is-active', this.tool === 'eraser');
 		this.penBtn.style.borderBottom = '3px solid ' + this.plugin.settings.penStyle.c;
 		this.markerBtn.style.borderBottom = '3px solid ' + this.plugin.settings.markerStyle.c;
-		if (this.autoOcrBtn) this.autoOcrBtn.toggleClass('is-active', this.plugin.settings.autoOcr);
+		if (this.autoOcrBtn) {
+			this.autoOcrBtn.toggleClass('is-active', this.plugin.settings.autoOcr);
+			if (this.autoStateEl) this.autoStateEl.setText(this.plugin.settings.autoOcr ? '●' : '○');
+		}
 	}
 
 	updateHud() {
@@ -1045,7 +1102,7 @@ class ScribeView extends TextFileView {
 			const key = lineKey(line);
 			let text = this.ocrCache.get(key);
 			if (text == null) {
-				text = await recognizeGoogleInk(line, lang, this.docData.width, this.docData.height);
+				text = await recognizeGoogleInk(line, lang);
 				if (this.ocrCache.size > 800) this.ocrCache.clear();
 				this.ocrCache.set(key, text);
 			}
@@ -1076,13 +1133,26 @@ class ScribeView extends TextFileView {
 
 	updateTextPane() {
 		if (!this.textPane) return;
+		// Never clobber an edit in progress.
+		if (document.activeElement === this.textBody) return;
 		const text = this.docData && this.docData.ocr && this.docData.ocr.text;
 		if (text) {
-			this.textBody.setText(text);
+			this.textBody.value = text;
 			this.textPane.style.display = '';
+			this.autoGrowTextPane();
 		} else {
 			this.textPane.style.display = 'none';
 		}
+	}
+
+	autoGrowTextPane() {
+		const el = this.textBody;
+		if (!el) return;
+		// Grow with content up to ~45% of the viewport, then scroll inside —
+		// keeps the whole text reachable on tablets regardless of page height.
+		el.style.height = 'auto';
+		const max = Math.round(window.innerHeight * 0.45);
+		el.style.height = Math.min(el.scrollHeight + 4, max) + 'px';
 	}
 }
 
