@@ -25,6 +25,7 @@ const {
 	PluginSettingTab,
 	Setting,
 	Notice,
+	Menu,
 	TFile,
 	Platform,
 	normalizePath,
@@ -53,6 +54,16 @@ const TR = {
 		redo: 'Redo',
 		clearAll: 'Erase all',
 		addPage: 'Add page',
+		importBtn: 'Import (camera / photo / file)',
+		importCamera: 'Camera',
+		importPhoto: 'Photos',
+		importFile: 'File (PDF / image)',
+		importing: 'Importing…',
+		importFailed: 'Import failed: ',
+		importedN: 'Imported {n} page(s)',
+		pdfUnsupported: 'PDF import is unavailable in this environment (image import still works)',
+		noImageFile: 'Not an importable file',
+		ballLabel: 'Tools',
 		ocrBtn: 'Recognize now (only changed lines are sent)',
 		reocrBtn: 'Re-recognize everything (ignore cache)',
 		ocrAutoBtn: 'Toggle automatic recognition',
@@ -109,6 +120,19 @@ const TR = {
 			'HTTP API returning {"text": "..."} for POST {"image": "<base64 PNG>"} (used only with the Custom engine)',
 		setHud: 'Show debug HUD',
 		setHudDesc: 'Shows input events/s and draw time in the toolbar (for tuning)',
+		headDisplay: 'Display',
+		setLanguage: 'Language',
+		setLanguageDesc: 'UI language. "Auto" follows Obsidian. Reopen notes to fully apply',
+		optLangAuto: 'Auto (follow Obsidian)',
+		setPageNum: 'Page number position',
+		setPageNumDesc: 'Where the page number is drawn on each page (helpful on E-Ink where dashed separators are faint)',
+		optCornerOff: 'Off',
+		optCornerTL: 'Top-left',
+		optCornerTR: 'Top-right',
+		optCornerBL: 'Bottom-left',
+		optCornerBR: 'Bottom-right',
+		setFloatingBall: 'Floating ball toolbar',
+		setFloatingBallDesc: 'Collapse the toolbar into a draggable floating button (good for E-Ink / small screens). Reopen notes to apply',
 	},
 	ja: {
 		ribbon: '新規手書きノート (Scribe)',
@@ -121,6 +145,16 @@ const TR = {
 		redo: 'やり直す',
 		clearAll: '全消去',
 		addPage: 'ページ追加',
+		importBtn: 'インポート（カメラ / 写真 / ファイル）',
+		importCamera: 'カメラ',
+		importPhoto: '写真',
+		importFile: 'ファイル（PDF / 画像）',
+		importing: 'インポート中…',
+		importFailed: 'インポート失敗: ',
+		importedN: '{n}ページを取り込みました',
+		pdfUnsupported: 'この環境ではPDF取り込みが使えません（画像の取り込みは可能）',
+		noImageFile: '取り込めないファイルです',
+		ballLabel: 'ツール',
 		ocrBtn: '今すぐ認識（変更行のみ送信）',
 		reocrBtn: '全体を再認識（キャッシュ無視）',
 		ocrAutoBtn: '自動認識の切り替え',
@@ -177,11 +211,31 @@ const TR = {
 			'POST {"image": "<base64 PNG>"} → {"text": "..."} を返すHTTP API（認識エンジンで「カスタム」を選んだ場合のみ使用）',
 		setHud: 'デバッグHUD表示',
 		setHudDesc: 'ツールバーに 入力イベント数/秒 と描画時間を表示（チューニング用）',
+		headDisplay: '表示',
+		setLanguage: '言語',
+		setLanguageDesc: 'UIの言語。「自動」はObsidianに追従。反映にはノートを開き直す',
+		optLangAuto: '自動（Obsidianに追従）',
+		setPageNum: 'ページ番号の位置',
+		setPageNumDesc: '各ページに描くページ番号の位置（E-Inkでは点線区切りが薄いので便利）',
+		optCornerOff: 'なし',
+		optCornerTL: '左上',
+		optCornerTR: '右上',
+		optCornerBL: '左下',
+		optCornerBR: '右下',
+		setFloatingBall: 'フローティングボール',
+		setFloatingBallDesc: 'ツールバーをドラッグ可能な丸ボタンに畳む（E-Ink/小画面向け）。反映にはノートを開き直す',
 	},
 };
 
-const OBSIDIAN_LANG = window.localStorage.getItem('language') || 'en';
-const LANG = TR[OBSIDIAN_LANG] ? OBSIDIAN_LANG : 'en';
+// LANG is resolved from the plugin's language setting (falling back to
+// Obsidian's UI language). It is mutable so the setting can change it live.
+let LANG = 'en';
+
+function resolveLang(pref) {
+	const obsidian = window.localStorage.getItem('language') || 'en';
+	const pick = pref && pref !== 'auto' ? pref : obsidian;
+	LANG = TR[pick] ? pick : 'en';
+}
 
 function t(key) {
 	return (TR[LANG] && TR[LANG][key]) || TR.en[key] || key;
@@ -203,6 +257,9 @@ const DEFAULT_SETTINGS = {
 	ocrEndpoint: '',
 	autoOcr: false,
 	showDebugHud: false,
+	language: 'auto', // 'auto' | 'en' | 'ja'
+	pageNumPos: 'br', // 'off' | 'tl' | 'tr' | 'bl' | 'br'
+	floatingBall: false,
 	penStyle: { c: '#000000', w: 3, o: 1 },
 	markerStyle: { c: '#f1c40f', w: 16, o: 0.45 },
 };
@@ -421,6 +478,7 @@ class ScribeView extends TextFileView {
 		// squeezed into one texture, stretching everything and misplacing new
 		// ink. Per-page canvases stay well under the limit at any page count.
 		this.pages = []; // [{ wrap, main, over, mctx, octx }]
+		this.bgImages = new Map(); // vault path → HTMLImageElement | 'loading' | null
 		// debug HUD counters
 		this.dbgEvents = 0;
 		this.dbgDrawMs = 0;
@@ -451,6 +509,7 @@ class ScribeView extends TextFileView {
 		this.redoStack = [];
 		if (this.domReady) {
 			this.syncPages();
+			this.ensureAllBgs();
 			this.fullRedraw();
 			this.updateTextPane();
 		}
@@ -465,6 +524,19 @@ class ScribeView extends TextFileView {
 		this.domReady = true;
 		if (this.docData) {
 			this.syncPages();
+			this.ensureAllBgs();
+			this.fullRedraw();
+			this.updateTextPane();
+		}
+	}
+
+	/** Rebuild the whole view UI (used when floating-ball / language change). */
+	rebuild() {
+		if (!this.domReady) return;
+		this.buildDom();
+		if (this.docData) {
+			this.syncPages();
+			this.ensureAllBgs();
 			this.fullRedraw();
 			this.updateTextPane();
 		}
@@ -498,27 +570,27 @@ class ScribeView extends TextFileView {
 		return b;
 	}
 
-	buildDom() {
-		const root = this.contentEl;
-		root.empty();
-		root.addClass('emr-scribe-root');
+	/** Build the full set of tool buttons into `container`. Shared by the
+	 *  normal toolbar and the floating-ball popover so both stay identical.
+	 *  `onAny` (optional) is called after any action fires (used to close the
+	 *  floating popover). */
+	buildActionButtons(container, onAny) {
+		const after = () => { if (onAny) onAny(); };
 
-		const bar = root.createDiv({ cls: 'emr-scribe-toolbar' });
-
-		this.penBtn = this.iconBtn(bar, 'pencil', t('pen'));
-		this.markerBtn = this.iconBtn(bar, 'highlighter', t('marker'));
-		this.eraserBtn = this.iconBtn(bar, 'eraser', t('eraser'));
+		this.penBtn = this.iconBtn(container, 'pencil', t('pen'));
+		this.markerBtn = this.iconBtn(container, 'highlighter', t('marker'));
+		this.eraserBtn = this.iconBtn(container, 'eraser', t('eraser'));
 		this.penBtn.addEventListener('click', () => this.selectTool('pen'));
 		this.markerBtn.addEventListener('click', () => this.selectTool('marker'));
 		this.eraserBtn.addEventListener('click', () => this.selectTool('eraser'));
 
-		bar.createDiv({ cls: 'emr-scribe-sep' });
+		container.createDiv({ cls: 'emr-scribe-sep' });
 
-		const undoBtn = this.iconBtn(bar, 'undo-2', t('undo'));
-		undoBtn.addEventListener('click', () => this.undo());
-		const redoBtn = this.iconBtn(bar, 'redo-2', t('redo'));
-		redoBtn.addEventListener('click', () => this.redo());
-		const clearBtn = this.iconBtn(bar, 'eraser', t('clearAll'));
+		const undoBtn = this.iconBtn(container, 'undo-2', t('undo'));
+		undoBtn.addEventListener('click', () => { this.undo(); after(); });
+		const redoBtn = this.iconBtn(container, 'redo-2', t('redo'));
+		redoBtn.addEventListener('click', () => { this.redo(); after(); });
+		const clearBtn = this.iconBtn(container, 'eraser', t('clearAll'));
 		clearBtn.createSpan({ text: 'ALL', cls: 'emr-scribe-btn-sub' });
 		clearBtn.addEventListener('click', () => {
 			if (!this.docData.strokes.length) return;
@@ -529,27 +601,32 @@ class ScribeView extends TextFileView {
 				this.requestSave();
 				this.scheduleAutoOcr();
 			}
+			after();
 		});
 
-		const addPageBtn = this.iconBtn(bar, 'file-plus', t('addPage'));
-		addPageBtn.addEventListener('click', () => this.addPage());
+		const addPageBtn = this.iconBtn(container, 'file-plus', t('addPage'));
+		addPageBtn.addEventListener('click', () => { this.addPage(); after(); });
 
-		bar.createDiv({ cls: 'emr-scribe-sep' });
+		const importBtn = this.iconBtn(container, 'image-plus', t('importBtn'));
+		importBtn.addEventListener('click', (e) => { this.openImportMenu(e); after(); });
 
-		const ocrBtn = bar.createEl('button', { text: 'OCR', cls: 'emr-scribe-btn' });
+		container.createDiv({ cls: 'emr-scribe-sep' });
+
+		const ocrBtn = container.createEl('button', { text: 'OCR', cls: 'emr-scribe-btn' });
 		ocrBtn.setAttribute('aria-label', t('ocrBtn'));
-		ocrBtn.addEventListener('click', () => this.runOcr(true));
+		ocrBtn.addEventListener('click', () => { this.runOcr(true); after(); });
 
-		const reocrBtn = bar.createEl('button', { cls: 'emr-scribe-btn' });
+		const reocrBtn = container.createEl('button', { cls: 'emr-scribe-btn' });
 		reocrBtn.createSpan({ text: 'Re', cls: 'emr-scribe-btn-sub' });
 		reocrBtn.createSpan({ text: 'OCR' });
 		reocrBtn.setAttribute('aria-label', t('reocrBtn'));
 		reocrBtn.addEventListener('click', () => {
 			this.ocrCache.clear();
 			this.runOcr(true);
+			after();
 		});
 
-		this.autoOcrBtn = bar.createEl('button', { cls: 'emr-scribe-btn' });
+		this.autoOcrBtn = container.createEl('button', { cls: 'emr-scribe-btn' });
 		this.autoOcrBtn.createSpan({ text: 'Auto' });
 		this.autoStateEl = this.autoOcrBtn.createSpan({ text: '○', cls: 'emr-scribe-btn-sub' });
 		this.autoOcrBtn.setAttribute('aria-label', t('ocrAutoBtn'));
@@ -560,9 +637,236 @@ class ScribeView extends TextFileView {
 			if (this.plugin.settings.autoOcr) this.scheduleAutoOcr();
 		});
 
-		if (this.plugin.settings.showDebugHud) {
-			this.hudEl = bar.createSpan({ cls: 'emr-scribe-hud', text: '—' });
-			this.dbgTimer = window.setInterval(() => this.updateHud(), 500);
+		this.refreshToolbar();
+	}
+
+	/** Collapsed toolbar: a draggable round button that opens a popover with
+	 *  the same actions. Keeps the whole screen free for writing on E-Ink. */
+	buildFloatingBall(root) {
+		const ball = root.createDiv({ cls: 'emr-scribe-ball' });
+		setIcon(ball, 'pencil');
+		ball.setAttribute('aria-label', t('ballLabel'));
+		const menu = root.createDiv({ cls: 'emr-scribe-ball-menu' });
+		menu.style.display = 'none';
+		this.buildActionButtons(menu, () => { menu.style.display = 'none'; });
+
+		const closeMenu = () => { menu.style.display = 'none'; };
+		const openMenu = () => {
+			// place the menu just above the ball, clamped to the view
+			menu.style.display = '';
+			const rb = ball.getBoundingClientRect();
+			const rr = root.getBoundingClientRect();
+			const mw = menu.offsetWidth || 240;
+			let left = rb.left - rr.left + rb.width / 2 - mw / 2;
+			left = Math.max(6, Math.min(left, rr.width - mw - 6));
+			menu.style.left = left + 'px';
+			const bottom = rr.height - (rb.top - rr.top) + 8;
+			menu.style.bottom = Math.min(bottom, rr.height - 6) + 'px';
+		};
+
+		// pointer-based drag with a tap threshold: a small movement is a tap
+		// (toggles the menu), a larger one repositions the ball.
+		let down = null;
+		let moved = false;
+		ball.addEventListener('pointerdown', (e) => {
+			e.preventDefault();
+			ball.setPointerCapture(e.pointerId);
+			const rr = root.getBoundingClientRect();
+			down = { x: e.clientX, y: e.clientY, ox: ball.offsetLeft, oy: ball.offsetTop, rr };
+			moved = false;
+		});
+		ball.addEventListener('pointermove', (e) => {
+			if (!down) return;
+			const dx = e.clientX - down.x, dy = e.clientY - down.y;
+			if (!moved && Math.hypot(dx, dy) < 8) return;
+			moved = true;
+			closeMenu();
+			let left = down.ox + dx, top = down.oy + dy;
+			left = Math.max(0, Math.min(left, down.rr.width - ball.offsetWidth));
+			top = Math.max(0, Math.min(top, down.rr.height - ball.offsetHeight));
+			ball.style.left = left + 'px';
+			ball.style.top = top + 'px';
+			ball.style.right = 'auto';
+			ball.style.bottom = 'auto';
+		});
+		const end = (e) => {
+			if (!down) return;
+			down = null;
+			if (!moved) {
+				if (menu.style.display === 'none') openMenu();
+				else closeMenu();
+			}
+		};
+		ball.addEventListener('pointerup', end);
+		ball.addEventListener('pointercancel', end);
+	}
+
+	// ---------- import (camera / photo / PDF-image background) ----------
+
+	openImportMenu(evt) {
+		const menu = new Menu();
+		menu.addItem((i) => i.setTitle(t('importCamera')).setIcon('camera').onClick(() => this.pickFiles('camera')));
+		menu.addItem((i) => i.setTitle(t('importPhoto')).setIcon('image').onClick(() => this.pickFiles('photo')));
+		menu.addItem((i) => i.setTitle(t('importFile')).setIcon('file').onClick(() => this.pickFiles('file')));
+		if (evt && evt.clientX != null) menu.showAtPosition({ x: evt.clientX, y: evt.clientY });
+		else menu.showAtPosition({ x: 100, y: 100 });
+	}
+
+	pickFiles(kind) {
+		const input = document.createElement('input');
+		input.type = 'file';
+		if (kind === 'camera') {
+			input.accept = 'image/*';
+			input.capture = 'environment';
+		} else if (kind === 'photo') {
+			input.accept = 'image/*';
+			input.multiple = true;
+		} else {
+			input.accept = 'application/pdf,image/*';
+			input.multiple = true;
+		}
+		input.addEventListener('change', async () => {
+			const files = Array.from(input.files || []);
+			for (const f of files) {
+				try {
+					await this.importFile(f);
+				} catch (err) {
+					new Notice(t('importFailed') + (err && err.message ? err.message : String(err)));
+				}
+			}
+		});
+		input.click();
+	}
+
+	async importFile(file) {
+		const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+		const isImg = file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name);
+		if (isPdf) {
+			await this.importPdf(file);
+		} else if (isImg) {
+			new Notice(t('importing'));
+			const buf = await file.arrayBuffer();
+			const ext = (file.name.split('.').pop() || 'png').toLowerCase();
+			const asset = await this.saveAsset(buf, ext);
+			this.addBackgroundPage(asset.path);
+			new Notice(t('importedN').replace('{n}', '1'));
+		} else {
+			new Notice(t('noImageFile'));
+		}
+	}
+
+	async importPdf(file) {
+		const pdfjs = window.pdfjsLib;
+		if (!pdfjs || !pdfjs.getDocument) {
+			new Notice(t('pdfUnsupported'));
+			return;
+		}
+		new Notice(t('importing'));
+		const buf = await file.arrayBuffer();
+		const pdf = await pdfjs.getDocument({ data: buf }).promise;
+		let n = 0;
+		for (let p = 1; p <= pdf.numPages; p++) {
+			const page = await pdf.getPage(p);
+			const base = page.getViewport({ scale: 1 });
+			const scale = Math.min(2.5, 1600 / base.width);
+			const viewport = page.getViewport({ scale });
+			const c = document.createElement('canvas');
+			c.width = Math.round(viewport.width);
+			c.height = Math.round(viewport.height);
+			await page.render({ canvasContext: c.getContext('2d'), viewport }).promise;
+			const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+			const asset = await this.saveAsset(await blob.arrayBuffer(), 'png');
+			if (!this.addBackgroundPage(asset.path)) break;
+			n++;
+		}
+		new Notice(t('importedN').replace('{n}', String(n)));
+	}
+
+	async saveAsset(arrayBuffer, ext) {
+		const parent = this.file && this.file.parent ? this.file.parent.path : '';
+		const dir = normalizePath((parent ? parent + '/' : '') + '_scribe_assets');
+		if (!this.app.vault.getAbstractFileByPath(dir)) {
+			await this.app.vault.createFolder(dir).catch(() => {});
+		}
+		const base = this.file ? this.file.basename : 'scribe';
+		const rnd = Math.random().toString(36).slice(2, 6);
+		const path = normalizePath(`${dir}/${base}-${Date.now()}-${rnd}.${ext}`);
+		return this.app.vault.createBinary(path, arrayBuffer);
+	}
+
+	/** Attach an image as the background of a page (reusing the first blank
+	 *  page, otherwise appending a new one), then draw on top of it. */
+	addBackgroundPage(path) {
+		const doc = this.docData;
+		if (!doc.bgs) doc.bgs = [];
+		let idx;
+		if (this.pages.length === 1 && !doc.strokes.length && !doc.bgs[0]) {
+			idx = 0;
+		} else {
+			if (!doc.pageH) doc.pageH = doc.height;
+			if (Math.round(doc.height / doc.pageH) >= 200) {
+				new Notice(t('pageLimit'));
+				return false;
+			}
+			doc.height += doc.pageH;
+			idx = this.pages.length;
+		}
+		doc.bgs[idx] = path;
+		this.syncPages();
+		this.ensureBg(idx);
+		this.fullRedraw();
+		this.requestSave();
+		this.scrollEl.scrollTo({ top: this.scrollEl.scrollHeight });
+		return true;
+	}
+
+	ensureAllBgs() {
+		const bgs = this.docData && this.docData.bgs;
+		if (!bgs) return;
+		for (let i = 0; i < bgs.length; i++) if (bgs[i]) this.ensureBg(i);
+	}
+
+	ensureBg(i) {
+		const path = this.docData.bgs && this.docData.bgs[i];
+		if (!path || this.bgImages.has(path)) return;
+		const file = this.app.vault.getAbstractFileByPath(path);
+		if (!(file instanceof TFile)) {
+			this.bgImages.set(path, null);
+			return;
+		}
+		this.bgImages.set(path, 'loading');
+		const img = new Image();
+		img.onload = () => {
+			this.bgImages.set(path, img);
+			this.fullRedraw();
+		};
+		img.onerror = () => this.bgImages.set(path, null);
+		img.src = this.app.vault.getResourcePath(file);
+	}
+
+	buildDom() {
+		const root = this.contentEl;
+		root.empty();
+		root.addClass('emr-scribe-root');
+		// rebuild() calls this on an already-live view: drop stale refs/timers
+		// and page canvases so nothing points at removed DOM.
+		this.pages = [];
+		this.penBtn = this.markerBtn = this.eraserBtn = null;
+		this.autoOcrBtn = this.autoStateEl = this.hudEl = null;
+		if (this.dbgTimer) {
+			window.clearInterval(this.dbgTimer);
+			this.dbgTimer = null;
+		}
+
+		if (this.plugin.settings.floatingBall) {
+			this.buildFloatingBall(root);
+		} else {
+			const bar = root.createDiv({ cls: 'emr-scribe-toolbar' });
+			this.buildActionButtons(bar);
+			if (this.plugin.settings.showDebugHud) {
+				this.hudEl = bar.createSpan({ cls: 'emr-scribe-hud', text: '—' });
+				this.dbgTimer = window.setInterval(() => this.updateHud(), 500);
+			}
 		}
 
 		this.panelEl = root.createDiv({ cls: 'emr-scribe-panel' });
@@ -695,6 +999,7 @@ class ScribeView extends TextFileView {
 	}
 
 	refreshToolbar() {
+		if (!this.penBtn) return;
 		this.penBtn.toggleClass('is-active', this.tool === 'pen');
 		this.markerBtn.toggleClass('is-active', this.tool === 'marker');
 		this.eraserBtn.toggleClass('is-active', this.tool === 'eraser');
@@ -768,10 +1073,23 @@ class ScribeView extends TextFileView {
 		const { width } = this.docData;
 		const pageH = this.docData.pageH;
 		const count = this.pages.length;
+		const bgs = this.docData.bgs;
 		for (let i = 0; i < count; i++) {
 			const ctx = this.pages[i].mctx;
 			ctx.fillStyle = '#ffffff';
 			ctx.fillRect(0, i * pageH, width, pageH);
+			// imported background image (PDF page / photo), contained & centered
+			const bgPath = bgs && bgs[i];
+			if (bgPath) {
+				const im = this.bgImages.get(bgPath);
+				if (im && im !== 'loading') {
+					const sc = Math.min(width / im.width, pageH / im.height);
+					const dw = im.width * sc, dh = im.height * sc;
+					ctx.drawImage(im, (width - dw) / 2, i * pageH + (pageH - dh) / 2, dw, dh);
+				} else if (im === undefined) {
+					this.ensureBg(i);
+				}
+			}
 			// dashed separator drawn inside the bottom of every non-last page
 			if (i < count - 1) {
 				ctx.save();
@@ -785,7 +1103,25 @@ class ScribeView extends TextFileView {
 				ctx.stroke();
 				ctx.restore();
 			}
+			this.drawPageNumber(ctx, i, width, pageH);
 		}
+	}
+
+	drawPageNumber(ctx, i, width, pageH) {
+		const pos = this.plugin.settings.pageNumPos || 'br';
+		if (pos === 'off') return;
+		const m = 26;
+		const fs = 34;
+		ctx.save();
+		ctx.fillStyle = '#9a9a9a';
+		ctx.font = `${fs}px sans-serif`;
+		ctx.textAlign = pos === 'tr' || pos === 'br' ? 'right' : 'left';
+		const top = pos === 'tl' || pos === 'tr';
+		ctx.textBaseline = top ? 'top' : 'alphabetic';
+		const x = pos === 'tr' || pos === 'br' ? width - m : m;
+		const y = top ? i * pageH + m : (i + 1) * pageH - m;
+		ctx.fillText(String(i + 1), x, y);
+		ctx.restore();
 	}
 
 	/** Extend the document downward by one page. Existing strokes keep their
@@ -1253,6 +1589,55 @@ class ScribeSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
+		new Setting(containerEl).setName(t('headDisplay')).setHeading();
+
+		new Setting(containerEl)
+			.setName(t('setLanguage'))
+			.setDesc(t('setLanguageDesc'))
+			.addDropdown((d) =>
+				d
+					.addOption('auto', t('optLangAuto'))
+					.addOption('en', t('optEn'))
+					.addOption('ja', t('optJa'))
+					.setValue(this.plugin.settings.language)
+					.onChange(async (v) => {
+						this.plugin.settings.language = v;
+						resolveLang(v);
+						await this.plugin.saveSettings();
+						this.plugin.refreshViews();
+						this.display();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName(t('setPageNum'))
+			.setDesc(t('setPageNumDesc'))
+			.addDropdown((d) =>
+				d
+					.addOption('off', t('optCornerOff'))
+					.addOption('tl', t('optCornerTL'))
+					.addOption('tr', t('optCornerTR'))
+					.addOption('bl', t('optCornerBL'))
+					.addOption('br', t('optCornerBR'))
+					.setValue(this.plugin.settings.pageNumPos)
+					.onChange(async (v) => {
+						this.plugin.settings.pageNumPos = v;
+						await this.plugin.saveSettings();
+						this.plugin.redrawViews();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName(t('setFloatingBall'))
+			.setDesc(t('setFloatingBallDesc'))
+			.addToggle((tc) =>
+				tc.setValue(this.plugin.settings.floatingBall).onChange(async (v) => {
+					this.plugin.settings.floatingBall = v;
+					await this.plugin.saveSettings();
+					this.plugin.refreshViews();
+				})
+			);
+
 		new Setting(containerEl)
 			.setName(t('setFolder'))
 			.setDesc(t('setFolderDesc'))
@@ -1488,6 +1873,20 @@ module.exports = class EmrScribePlugin extends Plugin {
 		await leaf.openFile(file);
 	}
 
+	/** Rebuild every open Scribe view (toolbar/ball/language changes). */
+	refreshViews() {
+		this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => {
+			if (leaf.view && typeof leaf.view.rebuild === 'function') leaf.view.rebuild();
+		});
+	}
+
+	/** Redraw every open Scribe view without rebuilding its UI (page numbers). */
+	redrawViews() {
+		this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => {
+			if (leaf.view && typeof leaf.view.fullRedraw === 'function') leaf.view.fullRedraw();
+		});
+	}
+
 	async loadSettings() {
 		const saved = await this.loadData();
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
@@ -1497,6 +1896,7 @@ module.exports = class EmrScribePlugin extends Plugin {
 			DEFAULT_SETTINGS.markerStyle,
 			saved && saved.markerStyle
 		);
+		resolveLang(this.settings.language);
 	}
 
 	async saveSettings() {

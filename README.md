@@ -16,7 +16,9 @@ Existing drawing plugins re-render their whole scene through a UI framework on e
 - **Pen / marker / eraser** with an iPad-Notes-style popover: 5 thickness presets, color palette + custom color, opacity slider (settings are remembered per tool).
 - **Pressure-sensitive** stroke width (pen), stroke-level eraser, hardware eraser button support.
 - **Real palm rejection** — fingers scroll, the pen draws, and touches during or right after pen use are ignored. A palm-initiated scroll is cancelled the instant the pen lands.
-- **Multi-page canvas** — extend the page downward as you go.
+- **Multi-page canvas** — extend the page downward as you go (one canvas per page, so it never hits the GPU texture-size limit that makes tall canvases break on E-Ink SoCs). Page numbers can be drawn in any corner.
+- **Import & annotate** — bring in a camera shot, photo, or file (PDF / image) and write on top of it. Each PDF page or image becomes a page background; your ink stays on its own layer.
+- **Floating-ball toolbar** — optionally collapse the toolbar into a draggable round button to free the whole screen for writing.
 
 ## Handwriting recognition (OCR)
 

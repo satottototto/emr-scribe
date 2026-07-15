@@ -5,8 +5,47 @@
 	flex-direction: column;
 	height: 100%;
 	padding: 0;
+	position: relative;
 	-webkit-user-select: none;
 	user-select: none;
+}
+
+/* floating ball toolbar */
+.emr-scribe-ball {
+	position: absolute;
+	right: 16px;
+	bottom: 16px;
+	width: 52px;
+	height: 52px;
+	border-radius: 50%;
+	background: var(--background-primary);
+	border: 2px solid var(--text-normal);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 20;
+	cursor: grab;
+	touch-action: none;
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.emr-scribe-ball svg {
+	width: 26px;
+	height: 26px;
+}
+
+.emr-scribe-ball-menu {
+	position: absolute;
+	z-index: 21;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	max-width: min(92vw, 360px);
+	padding: 8px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
 .emr-scribe-toolbar {
