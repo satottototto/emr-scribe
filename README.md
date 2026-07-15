@@ -4,6 +4,8 @@ Low-latency handwriting for Obsidian on **E-Ink tablets with Wacom EMR styluses*
 
 Existing drawing plugins re-render their whole scene through a UI framework on every pen sample, which makes them feel sluggish on E-Ink hardware. EMR Scribe draws each new ink segment straight onto a low-latency canvas instead.
 
+![EMR Scribe running on a Bigme E-Ink tablet — handwriting with the floating-ball toolbar, page navigation and recognized text](docs/screenshot.png)
+
 ## Why it feels fast
 
 - **Incremental rendering** — while you write, only the new segment is drawn. No framework, no virtual DOM, no full-scene redraws (which is also what makes E-Ink screens flash).
