@@ -1,7 +1,7 @@
 {
 	"id": "emr-scribe",
 	"name": "EMR Scribe",
-	"version": "0.8.0",
+	"version": "0.8.1",
 	"minAppVersion": "1.4.0",
 	"description": "Low-latency handwriting for E-Ink and Wacom EMR devices. Incremental canvas rendering, pressure, palm rejection, multi-page canvas, and built-in Japanese/English handwriting recognition (OCR) kept alongside the ink.",
 	"author": "satottototto",

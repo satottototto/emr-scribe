@@ -26,6 +26,7 @@ const {
 	Setting,
 	Notice,
 	Menu,
+	Modal,
 	TFile,
 	Platform,
 	normalizePath,
@@ -64,6 +65,16 @@ const TR = {
 		pdfUnsupported: 'PDF import is unavailable in this environment (image import still works)',
 		noImageFile: 'Not an importable file',
 		ballLabel: 'Tools',
+		pagePrev: 'Previous page',
+		pageNext: 'Next page',
+		pageMenu: 'Page actions',
+		pageGoto: 'Go to page…',
+		pageDelete: 'Delete this page',
+		pageMoveUp: 'Move page up',
+		pageMoveDown: 'Move page down',
+		gotoTitle: 'Go to page',
+		gotoOk: 'Go',
+		confirmDeletePage: 'Delete this page and its handwriting?',
 		ocrBtn: 'Recognize now (only changed lines are sent)',
 		reocrBtn: 'Re-recognize everything (ignore cache)',
 		ocrAutoBtn: 'Toggle automatic recognition',
@@ -155,6 +166,16 @@ const TR = {
 		pdfUnsupported: 'この環境ではPDF取り込みが使えません（画像の取り込みは可能）',
 		noImageFile: '取り込めないファイルです',
 		ballLabel: 'ツール',
+		pagePrev: '前のページ',
+		pageNext: '次のページ',
+		pageMenu: 'ページ操作',
+		pageGoto: 'ページを指定…',
+		pageDelete: 'このページを削除',
+		pageMoveUp: 'ページを上へ',
+		pageMoveDown: 'ページを下へ',
+		gotoTitle: 'ページを指定',
+		gotoOk: '移動',
+		confirmDeletePage: 'このページと手書きを削除しますか？',
 		ocrBtn: '今すぐ認識（変更行のみ送信）',
 		reocrBtn: '全体を再認識（キャッシュ無視）',
 		ocrAutoBtn: '自動認識の切り替え',
@@ -449,6 +470,42 @@ async function recognizeGoogleInk(lineStrokes, lang) {
 }
 
 // ---------- view ----------
+
+class GoToPageModal extends Modal {
+	constructor(app, count, current, onGo) {
+		super(app);
+		this.count = count;
+		this.current = current;
+		this.onGo = onGo;
+	}
+	onOpen() {
+		this.titleEl.setText(t('gotoTitle'));
+		const row = this.contentEl.createDiv({ cls: 'emr-scribe-goto' });
+		const input = row.createEl('input', { type: 'number' });
+		input.min = '1';
+		input.max = String(this.count);
+		input.value = String(this.current + 1);
+		const go = () => {
+			let n = parseInt(input.value, 10);
+			if (!(n >= 1)) n = 1;
+			if (n > this.count) n = this.count;
+			this.close();
+			this.onGo(n - 1);
+		};
+		const btn = row.createEl('button', { text: t('gotoOk') });
+		btn.addEventListener('click', go);
+		input.addEventListener('keydown', (e) => {
+			if (e.key === 'Enter') go();
+		});
+		window.setTimeout(() => {
+			input.focus();
+			input.select();
+		}, 0);
+	}
+	onClose() {
+		this.contentEl.empty();
+	}
+}
 
 class ScribeView extends TextFileView {
 	constructor(leaf, plugin) {
@@ -902,13 +959,175 @@ class ScribeView extends TextFileView {
 			}, 600);
 		});
 
+		// Always-visible page navigation footer (works in both toolbar and
+		// floating-ball modes) — the non-scroll way to move between pages.
+		this.buildNavFooter(root);
+
 		// touch-action must be 'none': Android lets the STYLUS trigger pan
 		// gestures too, which cancels strokes mid-write. Finger panning is
 		// handled manually in the pointer handlers instead.
 		this.wrapEl.style.touchAction = 'none';
 
+		this.scrollEl.addEventListener('scroll', () => this.updatePageIndicator());
+
 		this.bindPointerEvents();
 		this.refreshToolbar();
+	}
+
+	buildNavFooter(root) {
+		const nav = root.createDiv({ cls: 'emr-scribe-nav' });
+
+		const prev = this.iconBtn(nav, 'chevron-left', t('pagePrev'));
+		prev.addEventListener('click', () => this.gotoRelative(-1));
+
+		this.navIndicatorEl = nav.createEl('button', {
+			cls: 'emr-scribe-btn emr-scribe-nav-indicator',
+			text: '1 / 1',
+		});
+		this.navIndicatorEl.setAttribute('aria-label', t('pageGoto'));
+		this.navIndicatorEl.addEventListener('click', () => {
+			new GoToPageModal(this.app, this.pages.length, this.currentPage(), (i) =>
+				this.goToPage(i)
+			).open();
+		});
+
+		const next = this.iconBtn(nav, 'chevron-right', t('pageNext'));
+		next.addEventListener('click', () => this.gotoRelative(1));
+
+		nav.createDiv({ cls: 'emr-scribe-nav-spacer' });
+
+		const menuBtn = this.iconBtn(nav, 'more-vertical', t('pageMenu'));
+		menuBtn.addEventListener('click', (e) => this.openPageMenu(e));
+
+		this.updatePageIndicator();
+	}
+
+	// ---------- page navigation & management ----------
+
+	pageStep() {
+		if (!this.pages.length || !this.pages[0].wrap) return 0;
+		return this.pages[0].wrap.getBoundingClientRect().height || 0;
+	}
+
+	currentPage() {
+		const step = this.pageStep();
+		if (!step) return 0;
+		const i = Math.round(this.scrollEl.scrollTop / step);
+		return Math.max(0, Math.min(this.pages.length - 1, i));
+	}
+
+	goToPage(i) {
+		const step = this.pageStep();
+		const idx = Math.max(0, Math.min(this.pages.length - 1, i));
+		this.scrollEl.scrollTo({ top: idx * step });
+		this.updatePageIndicator(idx);
+	}
+
+	gotoRelative(d) {
+		this.goToPage(this.currentPage() + d);
+	}
+
+	updatePageIndicator(force) {
+		if (!this.navIndicatorEl) return;
+		const cur = force != null ? force : this.currentPage();
+		this.navIndicatorEl.setText(`${cur + 1} / ${this.pages.length}`);
+	}
+
+	openPageMenu(evt) {
+		const menu = new Menu();
+		menu.addItem((i) =>
+			i.setTitle(t('pageGoto')).setIcon('hash').onClick(() =>
+				new GoToPageModal(this.app, this.pages.length, this.currentPage(), (n) =>
+					this.goToPage(n)
+				).open()
+			)
+		);
+		menu.addSeparator();
+		menu.addItem((i) =>
+			i.setTitle(t('pageMoveUp')).setIcon('arrow-up').onClick(() => {
+				const c = this.currentPage();
+				if (c > 0) this.swapPages(c, c - 1, c - 1);
+			})
+		);
+		menu.addItem((i) =>
+			i.setTitle(t('pageMoveDown')).setIcon('arrow-down').onClick(() => {
+				const c = this.currentPage();
+				if (c < this.pages.length - 1) this.swapPages(c, c + 1, c + 1);
+			})
+		);
+		menu.addSeparator();
+		menu.addItem((i) =>
+			i.setTitle(t('pageDelete')).setIcon('trash-2').onClick(() => {
+				if (window.confirm(t('confirmDeletePage'))) this.deletePage(this.currentPage());
+			})
+		);
+		if (evt && evt.clientX != null) menu.showAtPosition({ x: evt.clientX, y: evt.clientY });
+		else menu.showAtPosition({ x: 100, y: 100 });
+	}
+
+	/** Which page a stroke belongs to (by its first point). */
+	strokePageIndex(s, pageH, count) {
+		const y = s.p && s.p.length ? s.p[0][1] : 0;
+		return Math.max(0, Math.min(count - 1, Math.floor(y / pageH)));
+	}
+
+	deletePage(idx) {
+		const doc = this.docData;
+		const count = this.pages.length;
+		const pageH = doc.pageH || doc.height;
+		if (count <= 1) {
+			// keep one page: just clear it
+			doc.strokes = [];
+			if (doc.bgs) doc.bgs[0] = null;
+			this.redoStack = [];
+			this.fullRedraw();
+			this.requestSave();
+			this.scheduleAutoOcr();
+			this.updatePageIndicator(0);
+			return;
+		}
+		const kept = [];
+		for (const s of doc.strokes) {
+			const p = this.strokePageIndex(s, pageH, count);
+			if (p === idx) continue; // drop strokes on the deleted page
+			if (p > idx) for (const pt of s.p) pt[1] -= pageH; // shift lower pages up
+			kept.push(s);
+		}
+		doc.strokes = kept;
+		if (doc.bgs) doc.bgs.splice(idx, 1);
+		doc.height -= pageH;
+		this.redoStack = [];
+		this.ocrCache.clear();
+		this.syncPages();
+		this.ensureAllBgs();
+		this.fullRedraw();
+		this.requestSave();
+		this.scheduleAutoOcr();
+		this.goToPage(Math.min(idx, this.pages.length - 1));
+	}
+
+	swapPages(a, b, focus) {
+		const doc = this.docData;
+		const count = this.pages.length;
+		const pageH = doc.pageH || doc.height;
+		for (const s of doc.strokes) {
+			const p = this.strokePageIndex(s, pageH, count);
+			if (p === a) for (const pt of s.p) pt[1] += (b - a) * pageH;
+			else if (p === b) for (const pt of s.p) pt[1] += (a - b) * pageH;
+		}
+		if (doc.bgs) {
+			const tmp = doc.bgs[a];
+			doc.bgs[a] = doc.bgs[b];
+			doc.bgs[b] = tmp;
+		}
+		this.redoStack = [];
+		this.ocrCache.clear();
+		this.syncPages();
+		this.ensureAllBgs();
+		this.fullRedraw();
+		this.requestSave();
+		this.scheduleAutoOcr();
+		this.goToPage(focus != null ? focus : a);
 	}
 
 	selectTool(tool) {
@@ -1057,6 +1276,7 @@ class ScribeView extends TextFileView {
 				c.lineJoin = 'round';
 			}
 		}
+		this.updatePageIndicator();
 	}
 
 	// ---------- rendering ----------

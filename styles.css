@@ -10,6 +10,46 @@
 	user-select: none;
 }
 
+/* page navigation footer */
+.emr-scribe-nav {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 3px 6px;
+	border-top: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	flex: 0 0 auto;
+}
+
+.emr-scribe-nav-spacer {
+	flex: 1 1 auto;
+}
+
+.emr-scribe-nav-indicator {
+	min-width: 64px;
+	font-variant-numeric: tabular-nums;
+	font-size: 14px;
+}
+
+.emr-scribe-goto {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	margin-top: 8px;
+}
+
+.emr-scribe-goto input {
+	flex: 1 1 auto;
+	font-size: 18px;
+	padding: 6px 8px;
+	min-height: 40px;
+}
+
+.emr-scribe-goto button {
+	min-height: 40px;
+	min-width: 64px;
+}
+
 /* floating ball toolbar */
 .emr-scribe-ball {
 	position: absolute;
